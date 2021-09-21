@@ -1,4 +1,7 @@
+import os
 import socket
+
+USER = os.environ.get('USER')
 
 ALL_PATHS = {
     'jasmin': {
