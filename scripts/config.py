@@ -45,3 +45,5 @@ FAVOUR_FACTOR=4
 FAVOUR_INDEX=10
 # which filters to apply.
 FILTERS=('cape', 'shear')
+# shear filter only:
+# FILTERS=('shear', )
