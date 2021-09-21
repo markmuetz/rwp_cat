@@ -221,8 +221,8 @@ def main():
     """
     datadir = config.PATHS['datadir']
     outputdir = config.PATHS['outputdir']
-    # input_filename_glob = f'{datadir}/share/data/history/P5Y_DP20/au197a.pc19*.uvcape.nc'
-    input_filename_glob = f'{datadir}/share/data/history/P5Y_DP20/au197a.pc19880901.uvcape.nc'
+    input_filename_glob = f'{datadir}/share/data/history/P5Y_DP20/au197a.pc19*.uvcape.nc'
+    # input_filename_glob = f'{datadir}/share/data/history/P5Y_DP20/au197a.pc19880901.uvcape.nc'
     output_filename = f'{outputdir}/rwp_cat_output/analysis/profiles_filtered.hdf'
     output_filename = Path(output_filename)
     if output_filename.exists():
@@ -243,9 +243,7 @@ def main():
     else:
         cape = None
 
-    kwargs = {'lat_slice': config.TROPICS_SLICE,
-              't_slice': slice(0, 20, None)}
-
+    kwargs = {'lat_slice': config.TROPICS_SLICE}
     dates, u_samples, v_samples, lat, lon = _filter(u, v,
                                                     cape,
                                                     filter_on=config.FILTERS,
