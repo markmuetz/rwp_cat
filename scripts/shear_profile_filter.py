@@ -1,3 +1,4 @@
+import sys
 from glob import glob
 from pathlib import Path
 
@@ -9,13 +10,14 @@ import config
 from utils import get_cube
 
 
-def _filter(u, v, cape,
-            filter_on=None, t_slice=slice(None), lat_slice=slice(None), lon_slice=slice(None)):
+def filter_profiles(settings, u, v, cape,
+                    t_slice=slice(None), lat_slice=slice(None), lon_slice=slice(None)):
     """Perform filtering as defined by `filter_on` on input fields.
 
     An initial slice can be applied to any of time, lat or lon to reduce the domain of the
     filtered data. This is done to restrict the analysis to e.g. the tropics, through an
     appropriately designed slice."""
+    filter_on = settings.FILTERS
     # Explanation: slice cubes on t, lat, lon
     # u_red == u_reduced.
     u_red = u[t_slice, :, lat_slice, lon_slice]
@@ -27,7 +29,7 @@ def _filter(u, v, cape,
     u_red_iter = u_red.slices(['pressure', 'latitude', 'longitude'])
     v_red_iter = v_red.slices(['pressure', 'latitude', 'longitude'])
 
-    lat, lon = _extract_lat_lon(lat_slice, lon_slice, u)
+    lat, lon = extract_lat_lon(settings, lat_slice, lon_slice, u)
     print('Applying over lat/lon: {} to {}/{} to {}'.format(lat[0], lat[-1], lon[0], lon[-1]))
 
     pressure = u.coord('pressure').points
@@ -38,8 +40,8 @@ def _filter(u, v, cape,
     assert np.all(dp > 0)
     shear_pressure = (pressure[:-1] + pressure[1:]) / 2
 
-    # Find first index where shear pressure higher than config.SHEAR_PRESS_THRESH_HPA.
-    shear_pressure_thresh_index = np.where(shear_pressure > config.SHEAR_PRESS_THRESH_HPA)[0][0]
+    # Find first index where shear pressure higher than settings.SHEAR_PRESS_THRESH_HPA.
+    shear_pressure_thresh_index = np.where(shear_pressure > settings.SHEAR_PRESS_THRESH_HPA)[0][0]
     # Rem. that pressure[0] is the *lowest* pressure, i.e. the highest height.
     # So to filter out the and get the lower troposphere you do e.g. shear_pressure[thresh:]
     print('Use pressures: {}'.format(shear_pressure[shear_pressure_thresh_index:]))
@@ -48,8 +50,8 @@ def _filter(u, v, cape,
     # Need to find the max shears for each profile in advance.
     # This is because this filter is based on finding e.g. the 75th percentile.
     if 'shear' in filter_on:
-        max_profile_shear_percentile = _find_max_shear(u_red_iter, v_red_iter, dp, max_time,
-                                                       min_time, shear_pressure_thresh_index)
+        max_profile_shear_percentile = find_max_shear(settings, u_red_iter, v_red_iter, dp, max_time,
+                                                      min_time, shear_pressure_thresh_index)
     else:
         max_profile_shear_percentile = None
 
@@ -63,11 +65,12 @@ def _filter(u, v, cape,
         cape_red_iter = None
 
     (all_filters, all_lat, all_lon,
-     all_u_samples, all_v_samples, dates) = _apply_filters(u_red_iter, v_red_iter, cape_red_iter,
-                                                           lat, lon, dp, filter_on,
-                                                           max_profile_shear_percentile,
-                                                           max_time, min_time,
-                                                           shear_pressure_thresh_index)
+     all_u_samples, all_v_samples, dates) = apply_filters(settings,
+                                                          u_red_iter, v_red_iter, cape_red_iter,
+                                                          lat, lon, dp, filter_on,
+                                                          max_profile_shear_percentile,
+                                                          max_time, min_time,
+                                                          shear_pressure_thresh_index)
 
     print('Applied filters: {}'.format(all_filters))
 
@@ -78,7 +81,7 @@ def _filter(u, v, cape,
             np.concatenate(all_lon))
 
 
-def _extract_lat_lon(lat_slice, lon_slice, u):
+def extract_lat_lon(settings, lat_slice, lon_slice, u):
     """Use some numpy magic to get lat/lon arrays that match the input data field u.
 
     lat is a 1D np.array with length equal to nlat, nlon of u[0, 0, lat_slice, lon_slice]
@@ -95,7 +98,7 @@ def _extract_lat_lon(lat_slice, lon_slice, u):
     return lat, lon
 
 
-def _find_max_shear(u_red_iter, v_red_iter, dp, max_time, min_time, shear_pressure_thresh_index):
+def find_max_shear(settings, u_red_iter, v_red_iter, dp, max_time, min_time, shear_pressure_thresh_index):
     """Pre-process the shear to find the max shear in each profile - used by the shear filter."""
     print('preprocess_shear')
     max_shear = []
@@ -106,17 +109,17 @@ def _find_max_shear(u_red_iter, v_red_iter, dp, max_time, min_time, shear_pressu
             time, 100 * (time - min_time) / (max_time - min_time)
         ))
 
-        shear = _calc_shear(u_slice, v_slice, dp)
+        shear = calc_shear(u_slice, v_slice, dp)
         # Take max along pressure-axis.
         # Up to a given pressure level.
         max_profile_shear = shear[shear_pressure_thresh_index:].max(axis=0)
         max_shear.append(max_profile_shear.flatten())
     max_shear = np.concatenate(max_shear)
-    max_profile_shear_percentile = np.percentile(max_shear, config.SHEAR_PERCENTILE)
+    max_profile_shear_percentile = np.percentile(max_shear, settings.SHEAR_PERCENTILE)
     return max_profile_shear_percentile
 
 
-def _calc_shear(u_slice, v_slice, dp):
+def calc_shear(u_slice, v_slice, dp):
     """Calculate shear for each u/v profile."""
     # Note the newaxis/broadcasting to divide 3D array by 1D array.
     dudp = (u_slice.data[:-1, :, :] - u_slice.data[1:, :, :]) \
@@ -129,9 +132,9 @@ def _calc_shear(u_slice, v_slice, dp):
     return shear
 
 
-def _apply_filters(u_red_iter, v_red_iter, cape_red_iter, lat, lon, dp, filter_on,
-                   max_profile_shear_percentile, max_time, min_time,
-                   shear_pressure_thresh_index):
+def apply_filters(settings, u_red_iter, v_red_iter, cape_red_iter, lat, lon, dp, filter_on,
+                  max_profile_shear_percentile, max_time, min_time,
+                  shear_pressure_thresh_index):
     """Apply filters independently.
 
     `filter_on` used to filter based on the u/v/cape fields.
@@ -179,10 +182,10 @@ def _apply_filters(u_red_iter, v_red_iter, cape_red_iter, lat, lon, dp, filter_o
             # Apply filters one after the other. N.B each filter is independent - it acts on the
             # data irrespective of what other filters have already done.
             if cosar_filter == 'cape':
-                keep = cape_slice.data.flatten() > config.CAPE_THRESH
+                keep = cape_slice.data.flatten() > settings.CAPE_THRESH
             elif cosar_filter == 'shear':
                 # Take max along pressure-axis.
-                shear = _calc_shear(u_slice, v_slice, dp)
+                shear = calc_shear(u_slice, v_slice, dp)
                 # Only consider shears up to threshold.
                 max_profile_shear = shear[shear_pressure_thresh_index:].max(axis=0)
                 keep = max_profile_shear.flatten() > max_profile_shear_percentile
@@ -208,8 +211,8 @@ def _apply_filters(u_red_iter, v_red_iter, cape_red_iter, lat, lon, dp, filter_o
     return all_filters, all_lat, all_lon, all_u_samples, all_v_samples, dates
 
 
-def main():
-    """Filter shear profiles based on config.FILTERS.
+def shear_profile_filter(settings, input_filenames, output_filename):
+    """Filter shear profiles based on settings.FILTERS.
 
     Entry into cosar processing. Starts by loading a series of netcdf files produced by UM -
     see `input_filename_glob`. These contain u, v, w, and CAPE fields, which are loaded.
@@ -219,6 +222,40 @@ def main():
 
     Results are saved as an HDF5 file in `profile_filtered.hdf`.
     """
+    cubes = iris.load(input_filenames)
+    cubes = iris.cube.CubeList.concatenate(cubes)
+
+    u = get_cube(cubes, 30, 201)
+    v = get_cube(cubes, 30, 202)
+    # Rem as soon as you hit cube.data it forces a load of all data into mem.
+    # So the game is not to use cube.data until there is a small amount of data in the cube.
+    print('Cube shape: {}'.format(u.shape))
+    if 'cape' in settings.FILTERS:
+        cape = get_cube(cubes, 5, 233)
+    else:
+        cape = None
+
+    # Reduced - use for testing.
+    # kwargs = {'lat_slice': settings.TROPICS_SLICE,
+    #           't_slice': slice(0, 20, None)}
+    kwargs = {'lat_slice': settings.TROPICS_SLICE}
+
+    dates, u_samples, v_samples, lat, lon = filter_profiles(settings, u, v,
+                                                            cape,
+                                                            **kwargs)
+    pressure = u.coord('pressure').points
+    columns = ['u{:.0f}_hPa'.format(p) for p in pressure] +\
+              ['v{:.0f}_hPa'.format(p) for p in pressure]
+    df_filtered = pd.DataFrame(index=dates, columns=columns,
+                               data=np.concatenate([u_samples, v_samples], axis=1))
+    df_filtered['lat'] = lat
+    df_filtered['lon'] = lon
+
+    print(f'saving to {output_filename}')
+    df_filtered.to_hdf(output_filename, 'filtered_profile')
+
+
+if __name__ == '__main__':
     datadir = config.PATHS['datadir']
     outputdir = config.PATHS['outputdir']
     if config.USER == 'mmuetz':
@@ -231,44 +268,10 @@ def main():
     output_filename = Path(output_filename)
     if output_filename.exists():
         print(f'{output_filename} already exists. Delete to rerun')
-        return
-
-    filenames = sorted(glob(input_filename_glob))
-    cubes = iris.load(filenames)
-    cubes = iris.cube.CubeList.concatenate(cubes)
-
-    u = get_cube(cubes, 30, 201)
-    v = get_cube(cubes, 30, 202)
-    # Rem as soon as you hit cube.data it forces a load of all data into mem.
-    # So the game is not to use cube.data until there is a small amount of data in the cube.
-    print('Cube shape: {}'.format(u.shape))
-    if 'cape' in config.FILTERS:
-        cape = get_cube(cubes, 5, 233)
-    else:
-        cape = None
-
-    # Reduced - use for testing.
-    # kwargs = {'lat_slice': config.TROPICS_SLICE,
-    #           't_slice': slice(0, 20, None)}
-    kwargs = {'lat_slice': config.TROPICS_SLICE}
-
-    dates, u_samples, v_samples, lat, lon = _filter(u, v,
-                                                    cape,
-                                                    filter_on=config.FILTERS,
-                                                    **kwargs)
-    pressure = u.coord('pressure').points
-    columns = ['u{:.0f}_hPa'.format(p) for p in pressure] +\
-              ['v{:.0f}_hPa'.format(p) for p in pressure]
-    df_filtered = pd.DataFrame(index=dates, columns=columns,
-                               data=np.concatenate([u_samples, v_samples], axis=1))
-    df_filtered['lat'] = lat
-    df_filtered['lon'] = lon
-
+        sys.exit()
     output_filename.parent.mkdir(parents=True, exist_ok=True)
-    print(f'saving to {output_filename}')
-    df_filtered.to_hdf(output_filename, 'filtered_profile')
+    input_filenames = sorted(glob(input_filename_glob))
 
-
-if __name__ == '__main__':
-    main()
+    settings = config.default_settings
+    shear_profile_filter(settings, input_filenames, output_filename)
 
